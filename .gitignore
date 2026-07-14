@@ -1,0 +1,9 @@
+*
+!.gitignore
+!LICENSE
+!README.md
+!push_public.sh
+!codex/
+codex/*
+!codex/*.template.sh
+!codex/task.template.md
