@@ -1,0 +1,30 @@
+# Merge the relevant values into ~/.codex/config.toml; do not blindly replace
+# machine-specific hook trust hashes or unrelated project settings.
+
+notify = ["node", "/usr/lib/node_modules/oh-my-codex/dist/scripts/notify-hook.js"]
+model = "gpt-5.6-sol"
+model_reasoning_effort = "medium"
+model_context_window = 1000000
+model_auto_compact_token_limit = 900000
+developer_instructions = "You have oh-my-codex installed. AGENTS.md is the orchestration brain and main control surface. Follow AGENTS.md for workflow routing and role-specialized agents. Proceed autonomously on safe reversible work; verify before completion."
+
+# Add one table per real trusted project. This placeholder is syntactically valid
+# but should be replaced with the actual absolute path.
+[projects."/work/PROJECT"]
+trust_level = "trusted"
+
+[features]
+multi_agent = true
+child_agents_md = true
+hooks = true
+goals = true
+
+[agents]
+max_threads = 6
+max_depth = 2
+
+[shell_environment_policy.set]
+USE_OMX_EXPLORE_CMD = "1"
+
+[tui]
+status_line = ["model-with-reasoning", "git-branch", "context-remaining", "total-input-tokens", "total-output-tokens", "five-hour-limit", "weekly-limit"]

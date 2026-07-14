@@ -7,3 +7,9 @@
 codex/*
 !codex/*.template.sh
 !codex/task.template.md
+!codex/AGENTS.autonomous.md
+!codex/hooks.autonomous.json
+!codex/OMX_AUTONOMOUS_ORCHESTRATOR.md
+!codex/autopilot.prompt.template.md
+!codex/omx_autonomous.config.template.toml
+!codex/omx_autonomous.sha256

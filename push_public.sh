@@ -22,7 +22,7 @@ case "$BRANCH" in
     ALLOWED='^(\.gitignore|LICENSE|README\.md|push_public\.sh|[^/]+\.template\.sh)$'
     ;;
   codex)
-    ALLOWED='^(\.gitignore|LICENSE|README\.md|push_public\.sh|codex/[^/]+\.template\.sh|codex/task\.template\.md)$'
+    ALLOWED='^(\.gitignore|LICENSE|README\.md|push_public\.sh|codex/[^/]+\.template\.sh|codex/task\.template\.md|codex/(AGENTS\.autonomous\.md|hooks\.autonomous\.json|OMX_AUTONOMOUS_ORCHESTRATOR\.md|autopilot\.prompt\.template\.md|omx_autonomous\.config\.template\.toml|omx_autonomous\.sha256))$'
     ;;
   *)
     echo "Refusing to publish unsupported branch: $BRANCH" >&2
