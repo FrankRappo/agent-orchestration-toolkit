@@ -26,6 +26,10 @@ SESSION_PREFIX="${SESSION_PREFIX:-claude}"
 MAX_PARALLEL="${MAX_PARALLEL:-1}"
 RAM_MIN_KB="${RAM_MIN_KB:-900000}"
 IDLE_EXIT="${IDLE_EXIT:-0}"
+# Мин. интервал между стартами ОДНОГО таска: не перезапускать раньше, чем launcher успеет поднять
+# REPL — иначе новый launcher своим `tmux kill-session` добьёт REPL ещё не вставшего предыдущего
+# запуска → бесконечный churn (кейс T02 2026-07-16). Ставь > (STARTUP_WAIT launcher'а + PID-wait супервизора).
+START_GRACE="${START_GRACE:-90}"
 TASKS="${TASKS:-}"
 STATUS_RE='^[[:space:]]*STATUS:[[:space:]]*(SUCCESS|FAIL|BLOCKED|PARTIAL)[[:space:]]*$'
 
@@ -56,9 +60,13 @@ mark_progress(){ local t="$1" s="$2"; grep -qa "\\b$t\\b.*STATUS=" "$PROGRESS" 2
 
 start_task(){
   local task="$1" tf report sess lock
-  tf="$(task_file "$task")"; report="$(report_path "$task")"; sess="$(session_name "$task")"
+  sess="$(session_name "$task")"
+  # идемпотентность: НИКОГДА не пересоздаём (и не kill-session) живую сессию супервизора.
+  if tmux_alive "$sess"; then log "start_task: $sess уже жив — пропуск"; return 0; fi
+  tf="$(task_file "$task")"; report="$(report_path "$task")"
   lock="$(task_lock "$tf")"; [ -z "$lock" ] && lock=none
   echo "$lock" > "$STATE_DIR/$task.lock"; echo "$sess" > "$STATE_DIR/$task.session"
+  date +%s > "$STATE_DIR/$task.started"
   tmux kill-session -t "=$sess" 2>/dev/null
   log "starting $task session=$sess lock=$lock"
   tmux new-session -d -s "$sess" -c "$PROJECT_DIR" \
@@ -77,7 +85,7 @@ while true; do
     task="$(basename "$sf" .session)"; sess="$(cat "$sf" 2>/dev/null)"; [ -n "$sess" ] || continue
     if ! tmux_alive "$sess"; then
       st="$(report_status "$(report_path "$task")")"
-      if [ -n "$st" ]; then mark_progress "$task" "$st"; rm -f "$sf" "$STATE_DIR/$task.lock"; log "finished $task STATUS=$st"; fi
+      if [ -n "$st" ]; then mark_progress "$task" "$st"; rm -f "$sf" "$STATE_DIR/$task.lock" "$STATE_DIR/$task.started"; log "finished $task STATUS=$st"; fi
     fi
   done
 
@@ -93,6 +101,10 @@ while true; do
       tf="$(task_file "$task")"; [ -f "$tf" ] || continue
       [ -n "$(report_status "$(report_path "$task")")" ] && continue
       sess="$(session_name "$task")"; tmux_alive "$sess" && continue
+      # start-grace: если таск стартовали недавно — не перезапускаем, даём launcher'у поднять REPL
+      # (иначе новый kill-session добьёт REPL предыдущего запуска → churn).
+      started_at="$(cat "$STATE_DIR/$task.started" 2>/dev/null || echo 0)"; nows="$(date +%s)"
+      [ $(( nows - started_at )) -lt "$START_GRACE" ] && { log "grace: $task стартовал $(( nows - started_at ))s назад (<${START_GRACE}s) — жду, не перезапускаю"; continue; }
       lock="$(task_lock "$tf")"; [ -z "$lock" ] && lock=none
       lock_active "$lock" && { log "waiting lock=$lock for $task"; continue; }
       start_task "$task"
