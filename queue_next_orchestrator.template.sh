@@ -1,7 +1,9 @@
 #!/bin/bash
 # ============================================================================
 # QUEUE-СТОРОЖ — запуск ВТОРОГО оркестратора после ФИНАЛА первого.
-# Генеричный шаблон эстафеты между двумя волнами.
+# Шаблон по кейсу projectd FBX за projectb projectb2_queue (2026-06-12).
+# Боевой пример: /work/projectc/orch/scripts/queue_after_projectb.sh
+# Подробно: HOW_TO_RUN.md §12.
 #
 # ЗАЧЕМ: на машине нельзя два оркестратора разом (RAM/синглтоны, §8.7/8.9), а
 # юзер хочет «волна B стартует, когда волна A закончится». Дописать это в промпт
@@ -14,9 +16,9 @@
 #
 # ЗАПУСК (от ROOT, ПОСЛЕ того как все артефакты волны B созданы, но НИЧЕГО из B
 # ещё не запущено):
-#   cp /work/settings/queue_next_orchestrator.template.sh /work/<project>/orch/scripts/queue_after_<A>.sh
+#   cp /work/settings/claude/queue_next_orchestrator.template.sh /work/<PROJECT_B>/orch/scripts/queue_after_<A>.sh
 #   # заполнить НАСТРОЙКИ, chmod +x, затем:
-#   tmux new-session -d -s <PROJECT_TAG>_qwait "bash /work/<project>/orch/scripts/queue_after_<A>.sh"
+#   tmux new-session -d -s <TAG_B>_qwait "bash /work/<PROJECT_B>/orch/scripts/queue_after_<A>.sh"
 #   sleep 3 && tail -2 <LOG>   # verify: строка "armed"
 #
 # 🔴 ЧУЖОЕ НЕ ТРОГАТЬ: сторож ТОЛЬКО наблюдает сессии/процессы волны A.
@@ -27,18 +29,18 @@ unset TMUX TMUX_PANE TERM
 export LC_ALL=C.utf8 LANG=C.utf8
 
 # ====== НАСТРОЙКИ — поправь под свои волны ======
-FIRST_SESSION='upstream_queue'        # tmux-сессия первого оркестратора/очереди (EXACT имя)
+FIRST_SESSION='projectb2_queue'        # tmux-сессия первого оркестратора/очереди (EXACT имя)
 FIRST_TAIL_SESSIONS='^T-.*_sup:'   # ERE: per-task supervisor'ы волны A в `tmux ls` (пусто = не ждать)
-FIRST_AGENT_MARK='<project_mark>'     # подстрока argv claude-агентов волны A (пусто = не ждать)
+FIRST_AGENT_MARK='projectb'       # подстрока argv claude-агентов волны A (пусто = не ждать)
 TAIL_CAP_TICKS=240                 # cap ожидания хвостов, тиков по 60с (240 = 4ч), потом идём дальше
 RAM_MIN_KB=1500000                 # гейт MemAvailable перед стартом B
-LOG='/work/<project>/orch/logs/<project_tag>_queue_wait.log'            # кавычки: голые <> = bash-редирект
-ALL_DONE_B='/work/<project>/orch/reports/ALL_DONE_<WAVE>'      # сентинел готовности B (RE-check)
-SUP_SESSION_B='<project_tag>_sup'         # tmux supervisor'а волны B
-SUP_B='/work/<project>/orch/orchestrator_supervisor_<wave>.sh'
-RAM_GUARD_SESSION_B='<project_tag>_ram_guard'   # пусто = без RAM-сторожа
-RAM_GUARD_B='/work/<project>/orch/scripts/ram_guard_<wave>.sh'
-CHAT_ID="${CHAT_ID:-000000000}"
+LOG='/work/<PROJECT_B>/orch/logs/<TAG_B>_queue_wait.log'            # кавычки: голые <> = bash-редирект
+ALL_DONE_B='/work/<PROJECT_B>/orch/reports/ALL_DONE_<WAVE_B>'      # сентинел готовности B (RE-check)
+SUP_SESSION_B='<TAG_B>_sup'         # tmux supervisor'а волны B
+SUP_B='/work/<PROJECT_B>/orch/orchestrator_supervisor_<waveB>.sh'
+RAM_GUARD_SESSION_B='<TAG_B>_ram_guard'   # пусто = без RAM-сторожа
+RAM_GUARD_B='/work/<PROJECT_B>/orch/scripts/ram_guard_<waveB>.sh'
+CHAT_ID=YOUR_TELEGRAM_CHAT_ID
 START_MSG='⏱️ Волна A финишировала → стартую волну B.'
 # ================================================
 

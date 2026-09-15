@@ -5,29 +5,33 @@
 # Сначала по одному прогоняет таски волны B под RL-aware супервизором, затем по окончании
 # АВТОНОМНО снимает оркестратор A с паузы (resume-команда).
 #
-# Обратный паттерн описан в queue_wave_after_orchestrator.template.sh.
+# Реальный кейс (2026-06-30): прогнали projectd-волну (T102/T103/T104) → сняли PROJECTA `channel2_live`
+# с паузы (`supervisor_channel2_live.sh`). Док и обратный паттерн: /work/settings/docs/SEQUENTIAL_ORCHESTRATORS.md
 #
 # ЗАПУСК (ОТ ROOT):  tmux new-session -d -s wave_qrun "bash <этот файл>"; sleep 3 && tail -3 <LOG>
 # ОТМЕНА (до старта след. таска): tmux kill-session -t =wave_qrun  (уже идущий таск гасить: tmux kill-session -t =<SESSION>)
 set -u
+
+# Публикуемый шаблон: домашний каталог агента параметризован — подставьте своего пользователя.
+AGENT_USER="${AGENT_USER:-agentuser}"
+AGENT_HOME="${AGENT_HOME:-/home/$AGENT_USER}"
 unset TMUX TMUX_PANE TERM
 export LC_ALL=C.utf8 LANG=C.utf8
 
 # ===================== НАСТРОЙКИ (ЗАПОЛНИТЬ) =====================
 RAM_MIN_KB=1500000
-SUPERVISOR='/work/settings/wave_supervisor.template.sh'
-LOG='/work/<project>/chat/wave_run.log'
-CHAT_ID="${CHAT_ID:-000000000}"
-AGENT_USER="${AGENT_USER:-agent}"
+SUPERVISOR='/work/settings/claude/wave_supervisor.template.sh'
+LOG='/work/PROJECT_B/chat/wave_run.log'
+CHAT_ID=YOUR_TELEGRAM_CHAT_ID
 # Волна B — по одной строке на таск, В ПОРЯДКЕ выполнения:  TAG|PROJ_DIR|TASK_FILE|REPORT|JSONL_DIR|SESSION
 TASKS=(
-  "TB1|/work/<project>|/work/<project>/tasks/TB1_x.md|/work/<project>/reports/TB1_report.md|/home/$AGENT_USER/.claude/projects/-work-<project>|waveB_TB1_sup"
-  "TB2|/work/<project>|/work/<project>/tasks/TB2_x.md|/work/<project>/reports/TB2_report.md|/home/$AGENT_USER/.claude/projects/-work-<project>|waveB_TB2_sup"
+  "TB1|/work/PROJECT_B|/work/PROJECT_B/tasks/TB1_x.md|/work/PROJECT_B/reports/TB1_report.md|$AGENT_HOME/.claude/projects/-work-PROJECT_B|waveB_TB1_sup"
+  "TB2|/work/PROJECT_B|/work/PROJECT_B/tasks/TB2_x.md|/work/PROJECT_B/reports/TB2_report.md|$AGENT_HOME/.claude/projects/-work-PROJECT_B|waveB_TB2_sup"
 )
 # Оркестратор A — как возобновить ПОСЛЕ волны B (resume-команда обычно лежит в его progress.md):
-A_SESSION='<project_tag>_upstream_sup'                              # tmux-сессия супервизора A (для идемпотентности)
-A_RESUME_CMD='bash /work/<project>/orch/supervisor_upstream.sh' # что запустить в этой сессии (cwd = A_CWD)
-A_CWD='/work/<project>'
+A_SESSION='projecta_channel2_live_sup'                              # tmux-сессия супервизора A (для идемпотентности)
+A_RESUME_CMD='bash /work/projecta/orch/supervisor_channel2_live.sh' # что запустить в этой сессии (cwd = A_CWD)
+A_CWD='/work/projecta'
 # ================================================================
 
 TG="python3 /work/tg/bot.py send $CHAT_ID"

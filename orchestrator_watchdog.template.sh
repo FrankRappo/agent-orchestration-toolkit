@@ -1,35 +1,39 @@
 #!/bin/bash
+
+# Публикуемый шаблон: домашний каталог агента параметризован — подставьте своего пользователя.
+AGENT_USER="${AGENT_USER:-agentuser}"
+AGENT_HOME="${AGENT_HOME:-/home/$AGENT_USER}"
 # Watchdog оркестратора Claude — шаблон для копирования в проект.
-# Включает sub-agent respawn после подтверждённого API-timeout.
-# Включает API-retry detection и pstree zombie detection.
+# Версия: 2026-05-26 (добавлен sub-agent respawn — шаг 4b — см. §9.10.1 / projectd post-mortem).
+# Версия: 2026-05-23 (добавлены API-retry detection + pstree zombie detection).
 #
-# Замени <project_dir> на путь к проекту (например /work/<project>) и положи как
+# Замени <project_dir> на путь к проекту (например /work/shop) и положи как
 # /work/<project_dir>/chat/orchestrator_watchdog.sh — потом chmod +x.
 #
 # Запускается:
 #   - cron от root каждые 15 минут (A) (см. установку ниже)
 #   - bash-loop в отдельной tmux от root каждые 5 минут (B) — страховка
 #
-# Документация: /work/settings/README.md
-#   (+ §8.7 — guard на общие машинные ресурсы (SOCKS-порт / VNC / другие singleton-ресурсы),
+# Документация: /work/settings/docs/HOW_TO_RUN.md §9
+#   (+ §8.7 — guard на общие машинные ресурсы (SOCKS-порт / VNC :97,:98 / 1С-сеанс),
 #    КОГДА на машине крутится второй оркестратор: свой SOCKS_PORT + уникальное имя
-#    SESSION с префиксом проекта (дефолтный 'orchestrator' у двух прогонов совпадёт!).)
+#    SESSION с префиPROJECTAм проекта (дефолтный 'orchestrator' у двух прогонов совпадёт!).)
 #
 # Что проверяет (в порядке выполнения):
 #   1. progress.md существует — иначе оркестратор ещё не запускался.
 #   2. Все таски ✅ → снимает себя из cron, kill B-loop, удаляет state-dir.
 #   3. Tmux-сессия жива → если мертва, relaunch через launcher (TG-пинг).
 #   4. Claude внутри tmux жив → если нет, kill session + relaunch (TG-пинг).
-#  4b. Sub-agent respawn (НОВЫЙ , см. README.md):
+#  4b. Sub-agent respawn (НОВЫЙ 2026-05-26, см. HOW_TO_RUN §9.10.1):
 #      Для каждого `tasks/T*.md` без [x] в progress и без `reports/T*.done` —
 #      если pid_file мёртв И log содержит "Request timed out" → spawn runner.sh.
 #      Лимит 3 respawn-а на таску (state per-task в STATE_DIR).
 #   5. Новые `"isApiErrorMessage":true` в jsonl за последние 6ч → TG-пинг
 #      (cooldown 30 мин чтобы не спамить).
-#   6. Pstree всех claude-PID-ов под agent: если ≥12 тиков подряд (≥60 мин)
+#   6. Pstree всех claude-PID-ов под agentuser: если ≥12 тиков подряд (≥60 мин)
 #      ни один не имеет non-thread-children (Bash/ssh/curl) → TG-пинг
 #      «возможно завис» (один раз за инцидент).
-#  5b. IDLE/RATE-LIMIT RECOVERY (НОВЫЙ ): интерактивный tmux-оркестратор при
+#  5b. IDLE/RATE-LIMIT RECOVERY (НОВЫЙ 2026-07-10): интерактивный tmux-оркестратор при
 #      5ч-лимите Claude НЕ возобновляется сам (лимит печатается в панель, не в лог →
 #      grep нечего, в отличие от claude -p + wave_supervisor). Раньше он висел часами.
 #      Теперь: нет non-thread-детей И свежий jsonl не рос ≥IDLE_RECOVER_SECS (20 мин) И
@@ -44,7 +48,7 @@
 #   tmux new-session -d -s orch_watchdog_loop -c /work/<project_dir> \
 #     "bash -c 'while true; do /work/<project_dir>/chat/orchestrator_watchdog.sh; sleep 300; done'"
 #
-# Self-cleanup (с версии ):
+# Self-cleanup (с версии 2026-05-18):
 #   - Когда все таски в progress.md → [x]:
 #     * A-watchdog: `crontab -e` авто-удаление записи.
 #     * B-watchdog: `tmux kill-session orch_watchdog_loop`.
@@ -54,23 +58,23 @@
 # запускает его сам, и без `service cron start` крон-задачи не отработают.
 
 # КРИТИЧНО: если скрипт вызван из tmux-сессии (B-watchdog), он наследует
-# TMUX env и `runuser -u "$ORCHESTRATOR_USER" -- tmux has-session` уйдёт в чужой сокет →
+# TMUX env и `runuser -u agentuser -- tmux has-session` уйдёт в чужой сокет →
 # false-DEAD + Permission denied. Чистим:
 unset TMUX TMUX_PANE TERM
 
 # ====== НАСТРОЙКИ — поправь под проект ======
-PROJECT_DIR='/work/<project_dir>'      # ← поправь на свой путь, например /work/<project>
-PROJECT_TAG='<project_tag>'            # короткий тэг для pid-файлов sub-agent'ов (см. tasks_runner.template.sh)
-ORCHESTRATOR_USER="${ORCHESTRATOR_USER:-agent}"
+PROJECT_DIR='/work/<project_dir>'      # ← поправь на свой путь, например /work/shop
+PROJECT_TAG='<project_tag>'            # короткий тэг для pid-файлов sub-agent'ов, e.g. 'orv' (см. tasks_runner.template.sh)
+ORCHESTRATOR_USER=agentuser
 SESSION=orchestrator
 LAUNCHER=/tmp/launch_orchestrator_tmux.sh
 RUNNER="$PROJECT_DIR/tasks/runner.sh"  # sub-agent wrapper (см. tasks_runner.template.sh)
 LOG=$PROJECT_DIR/chat/orchestrator_watchdog.log
 PROMPT_FILE=$PROJECT_DIR/chat/orchestrator_resume_prompt.md
 PROGRESS=$PROJECT_DIR/chat/orchestrator_progress.md
-JSONL_DIR="/home/${ORCHESTRATOR_USER}/.claude/projects/-work-<project_dir>"   # слэши пути → дефисы (см. README.md)
+JSONL_DIR="$AGENT_HOME/.claude/projects/-work-<project_dir>"   # слэши пути → дефисы (см. HOW_TO_RUN §9.8.4), напр. $AGENT_HOME/.claude/projects/-work-shop
 TOTAL_TASKS=15      # сколько тасков всего у этого оркестратора
-CHAT_ID="${CHAT_ID:-000000000}"   # TG юзера для алертов
+CHAT_ID=YOUR_TELEGRAM_CHAT_ID   # TG юзера для алертов
 SUBAGENT_RESPAWN_LIMIT=3   # максимум respawn-ов на одну sub-agent таску (см. шаг 4b)
 
 # State-dir для счётчиков между тиками (уникальный per-wave, если у тебя
@@ -80,14 +84,14 @@ S_API_COUNT="$STATE_DIR/api_retries"
 S_ZOMBIE_TICKS="$STATE_DIR/zombie_ticks"
 S_ZOMBIE_ALERTED="$STATE_DIR/zombie_alerted"
 S_API_ALERT_TS="$STATE_DIR/api_last_alert_ts"
-S_RECOVER_TS="$STATE_DIR/recover_ts"        # 🔴 NEW : время последнего авто-подъёма
-S_RECOVER_COUNT="$STATE_DIR/recover_count"  # 🔴 NEW : счётчик авто-подъёмов (предохранитель)
+S_RECOVER_TS="$STATE_DIR/recover_ts"        # 🔴 NEW 2026-07-10: время последнего авто-подъёма
+S_RECOVER_COUNT="$STATE_DIR/recover_count"  # 🔴 NEW 2026-07-10: счётчик авто-подъёмов (предохранитель)
 
 # Лимиты (обычно не менять):
 ZOMBIE_TICK_LIMIT=12          # ≥12 тиков × 5 мин = 60 мин без non-thread активности → пинг
 API_ALERT_COOLDOWN=1800       # не чаще раза в 30 мин — иначе спам при длинной серии ретраев
 JSONL_LOOKBACK_HOURS=6        # сканировать только свежие jsonl, иначе ловим артефакты прошлых волн
-# 🔴 NEW  — IDLE/RATE-LIMIT RECOVERY (шаг 5b). Закрывает дыру: RL-защита в
+# 🔴 NEW 2026-07-10 — IDLE/RATE-LIMIT RECOVERY (шаг 5b). Закрывает дыру: RL-защита в
 # /work/settings есть ТОЛЬКО у claude -p (wave_supervisor/single_agent_supervisor/runner),
 # а у ИНТЕРАКТИВНОГО tmux-оркестратора её не было. При 5ч-лимите интерактивный REPL
 # печатает лимит в панель (не в лог → grep нечего) и НЕ возобновляется сам → висит часами.
@@ -97,7 +101,7 @@ JSONL_LOOKBACK_HOURS=6        # сканировать только свежие
 IDLE_RECOVER_SECS=1200        # jsonl тих ≥20 мин при простое → поднять заново (модель-turn столько не длится; ожидание саб-агента идёт через bash-sleep = non-thread child → сюда не попадёт)
 RECOVER_COOLDOWN=1200         # не поднимать чаще раза в 20 мин (анти-шторм)
 RECOVER_MAX=8                 # предохранитель: больше — только TG, ручная проверка (в сутки реально ≤5 RL)
-# 🔴 ФИКС : узкий RL_RE (только настоящий harness-формат), не проза агента про лимит.
+# 🔴 ФИКС 2026-07-13: узкий RL_RE (только настоящий harness-формат), не проза агента про лимит.
 RL_RE='hit your (session|usage|5.?hour|weekly) limit|limit will reset|resets? (at )?[0-9]{1,2}(:[0-9]{2})? ?(am|pm)|usage limit reached'
 # ============================================
 
@@ -107,7 +111,7 @@ TG="python3 /work/tg/bot.py send $CHAT_ID"
 exec >> "$LOG" 2>&1
 echo "[$(date '+%F %T')] watchdog tick (caller=${USER:-root}, tmux_env=${TMUX:-none})"
 
-# -1. ДЕДЛАЙН-СТОП (см. README.md + deadline_stopper.template.sh): если юзер
+# -1. ДЕДЛАЙН-СТОП (см. HOW_TO_RUN §9.11 + deadline_stopper.template.sh): если юзер
 # заказал жёсткий стоп по времени, deadline_stopper.sh ставит сентинел-файл — после
 # него watchdog обязан САМОЛИКВИДИРОВАТЬСЯ (cron + B-loop), а не воскрешать сборку.
 if [ -f "$PROJECT_DIR/chat/DEADLINE_STOP" ]; then
@@ -164,7 +168,7 @@ if [ -z "$CLAUDE_PIDS" ]; then
   exit 0
 fi
 
-# 4b. Sub-agent respawn (НОВЫЙ  — см. README.md).
+# 4b. Sub-agent respawn (НОВЫЙ 2026-05-26 — см. HOW_TO_RUN §9.10.1).
 # Для каждой tasks/T*.md без [x] в progress и без reports/T*.done:
 # если pid-file указывает на мёртвый PID И log хвост содержит "Request timed out" →
 # spawn runner.sh с retry-счётчиком (лимит SUBAGENT_RESPAWN_LIMIT).
@@ -195,7 +199,7 @@ if [ -d "$PROJECT_DIR/tasks" ] && [ -x "$RUNNER" ]; then
 
     # Pid мёртв ИЛИ файла нет — проверяем что log намекает на API-timeout fail
     TASK_LOG="$PROJECT_DIR/logs/${TASK_ID}.log"
-    # Лога НЕТ = таск ещё НИ РАЗУ не
+    # 🔴 ФИКС 2026-06-10 (кейс projecte этап C): лога НЕТ = таск ещё НИ РАЗУ не
     # стартовал — запуск по порядку волн это работа ОРКЕСТРАТОРА, watchdog НЕ должен
     # его спавнить. Без этой проверки ПЕРВЫЙ тик B-loop'а (срабатывает через 0 сек
     # после установки) спавнит ВСЕ таски разом ДО старта оркестратора — ломая порядок
@@ -284,7 +288,7 @@ for pid in $CLAUDE_PIDS; do
   fi
 done
 
-# 5b. Хелперы IDLE/RL-recovery (NEW ).
+# 5b. Хелперы IDLE/RL-recovery (NEW 2026-07-10).
 jsonl_age(){ # секунд с mtime самого свежего jsonl (999999 если нет)
   local j; j=$(find "$JSONL_DIR" -maxdepth 1 -name '*.jsonl' 2>/dev/null | xargs -r ls -t 2>/dev/null | head -1)
   [ -z "$j" ] && { echo 999999; return; }

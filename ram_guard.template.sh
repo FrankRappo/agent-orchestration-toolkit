@@ -1,6 +1,6 @@
 #!/bin/bash
 # RAM-сторож (OOM-защита) — шаблон для копирования в проект.
-# Защита для машины, где несколько оркестраторов делят ограниченную RAM:
+# Версия: 2026-06-06 (новый — после projecte: два оркестратора делили 5.8Gi RAM,
 #   пики проседали до ~800Mi свободно → риск что Linux OOM-killer прибьёт ЧУЖОЙ
 #   оркестратор/процесс).
 #
@@ -22,7 +22,7 @@
 #     "bash -c 'while true; do /work/<project_dir>/chat/ram_guard.sh; sleep 20; done'"
 # Снять после финала сборки: tmux kill-session -t <tag>_ram_guard
 #
-# Документация: /work/settings/README.md
+# Документация: /work/settings/docs/HOW_TO_RUN.md §8.9
 
 # ====== НАСТРОЙКИ ======
 PROJECT_DIR='/work/<project_dir>'

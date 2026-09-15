@@ -1,9 +1,10 @@
 #!/bin/bash
 # Supervisor для ОДИНОЧНОГО claude -p агента (без tmux-оркестратора).
-# Включает защиту от API-stall и от ситуации, когда первый jsonl не появился:
-# раньше ветка else крутила
+# Версия: 2026-06-01 (projectb T-TASKA-COST-TEST — после 4 зависаний на API-turn).
+# Версия: 2026-06-20 (FIX «jsonl так и не появился»: раньше ветка else крутила
 #   «jsonl ещё не появился» БЕЗ таймаута → агент, зависший/застопленный ДО первого
 #   jsonl (напр. ram_guard SIGSTOP отдал RAM соседу), держал supervisor в вечном
+#   цикле. Кейс projectg T-TASKB-CONTACTS 2026-06-19 — 9ч висяк, очередь стояла.
 #   Теперь: нет jsonl дольше NO_JSONL_LIMIT (=STALL_LIMIT) → kill+respawn.
 #   + kill_sub делает SIGCONT (по группе) перед TERM, иначе на STOP-процесс TERM не дойдёт.)
 #
@@ -17,7 +18,7 @@
 #             САМ убивает зависший агент по PID, переподнимает стек (если нужен) и РЕСПАВНИТ.
 #   🔴 ВНИМАНИЕ: повторяющееся «SUB_PID DEAD без отчёта» каждые ~N мин (не OOM/не stall) =
 #     обычно АГЕНТ САМ УСТУПАЕТ ХОД в -p (фон/ScheduleWakeup + «жду переинвока»). Респавн НЕ лечит —
-#     правится в таск-файле: длинные операции = детач+блокирующий поллинг В ТОМ ЖЕ ходе. README.md
+#     правится в таск-файле: длинные операции = детач+блокирующий поллинг В ТОМ ЖЕ ходе. HOW_TO_RUN §10.0.
 #             Выходит при успехе (появился report) или при исчерпании лимита respawn.
 #
 # КОГДА НУЖЕН SUPERVISOR (а не watchdog):
@@ -31,10 +32,10 @@
 # 🔴🔴 ЭТОТ ШАБЛОН — ДЛЯ ОДИНОЧНОГО АГЕНТА. Stall-детект ниже (newest_jsonl) следит за jsonl ОДНОЙ
 #    сессии — это верно, когда агент один. ЕСЛИ supervisor стережёт ОРКЕСТРАТОР (который сам спавнит
 #    саб-агентов) — НЕЛЬЗЯ следить за jsonl оркестратора: он ЛЕГИТИМНО молчит, пока ждёт долгий саб-агент,
-#    и ты зря убьёшь+перезапустишь оркестратор.
+#    и ты зря убьёшь+перезапустишь оркестратор (кейс projectd DELIVERY 2026-06-04, см. HOW_TO_RUN §9.8ter).
 #    Для оркестратора: stall = возраст НОВЕЙШЕГО jsonl во ВСЁМ каталоге (NEWEST=$(ls -t $JSONL_DIR/*.jsonl|head -1)),
 #    порог 900с, и kill только PID оркестратора (потомок pane'а tmux), не pkill. Готовый —
-#    /work/<project>/orch/orchestrator_supervisor.sh.
+#    /work/projectc/orch/orchestrator_supervisor.sh.
 #
 # ⚠️ Полноценный §9-оркестратор (интерактивный claude в tmux) для ОДНОГО таска НЕ помогает:
 #    он сам подвержен тем же API-зависаниям. Supervisor — внешний (bash от root), потому надёжнее.
@@ -42,31 +43,33 @@
 # 🔴 БЕЗОПАСНОСТЬ: убивает ТОЛЬКО свой SUB_PID из PID-файла (grace TERM→KILL).
 #    НИКОГДА не делает pkill -f claude / chrome (у юзера бывают параллельные сессии).
 #    Стек гасит/поднимает только через свой STACK_UP_CMD (по PID/идемпотентно).
-#    🔴 Если на машине второй оркестратор (общие SOCKS/VNC/другие singleton-ресурсы) —
-#    оркестратор должен поднимать стек со своим портом и ставить
+#    🔴 Если на машине второй оркестратор (общие SOCKS-порт / VNC :97,:98 / 1С 1-сеанс) —
+#    см. HOW_TO_RUN.md §8.7: оркестратор поднимает стек со своим SOCKS_PORT (1082) и ставит
 #    guard перед VNC-таском (СТОП+пинг, а не клоббер чужого Xvfb/туннеля).
 #
 # Запускать ОТ ROOT в tmux:
-#   tmux new-session -d -s <TASK_ID>_sup -c /work/<project> \
+#   tmux new-session -d -s <TASK_ID>_sup -c /work/<проект> \
 #     "bash /tmp/<TASK_ID>_supervisor.sh"
 #
-# ЗАВИСИМОСТИ (готовятся ДО запуска, как для watchdog — см. README.md):
+# ЗАВИСИМОСТИ (готовятся ДО запуска, как для watchdog — см. HOW_TO_RUN §9.8.2):
 #   - /tmp/<TASK_ID>_launch.sh   — launcher с PID-capture (echo $$ > pidfile; exec claude -p ...)
 #   - /tmp/<TASK_ID>_prompt.txt  — prompt (preamble + таск)
-#   - лог chat/<TASK_ID>_output.log  — chown для AGENT_USER, chmod 666
+#   - лог chat/<TASK_ID>_output.log  — chown agentuser, chmod 666
 #   - таск-файл должен в КОНЦЕ писать report (REPORT) — это сигнал ФИНИША, и ПОСЛЕДНЕЙ
 #     строкой в нём статус:  STATUS: SUCCESS | FAIL | BLOCKED | PARTIAL  (успех ≠ факт файла; см. ниже).
 
 set -u
+
+# Публикуемый шаблон: домашний каталог агента параметризован — подставьте своего пользователя.
+AGENT_USER="${AGENT_USER:-agentuser}"
+AGENT_HOME="${AGENT_HOME:-/home/$AGENT_USER}"
 unset TMUX TMUX_PANE TERM
 export LC_ALL=C.utf8 LANG=C.utf8   # bot.py ждёт UTF-8 (иначе TG 400)
 
 # ====== НАСТРОЙКИ — заполнить под таск ======
 TASK="T-EXAMPLE"                               # ← короткий ID таска (sed заменит на твой)
-PROJECT="<project>"                             # ← замени placeholder; кавычки обязательны для <>
+PROJECT="<проект>"                             # ← например projectb (кавычки: голые <> = bash-редирект)
 PROJ_DIR=/work/$PROJECT
-AGENT_USER="${AGENT_USER:-agent}"
-AGENT_HOME="${AGENT_HOME:-/home/$AGENT_USER}"
 PID_FILE=/tmp/${TASK}.pid                       # PID-файл от launcher'а
 LAUNCHER=/tmp/${TASK}_launch.sh                 # launcher с PID-capture
 LOG=$PROJ_DIR/chat/${TASK}_output.log           # output -p агента
@@ -76,9 +79,9 @@ REPORT=$PROJ_DIR/chat/report_${TASK}.md         # отчёт агента = си
 #    Таск-файл ОБЯЗАН в самом конце отчёта писать одну строку:  STATUS: SUCCESS | FAIL | BLOCKED | PARTIAL
 STATUS_RE='^[[:space:]]*STATUS:[[:space:]]*(SUCCESS|FAIL|BLOCKED|PARTIAL)'  # каноническая статус-строка отчёта
 LEGACY_SUCCESS_RE='МАРКЕР УСПЕХА'   # обратная совместимость: старая конвенция (пишется ТОЛЬКО на успех). Пусто = выкл.
-JSONL_DIR="$AGENT_HOME/.claude/projects/-work-$PROJECT" # Claude-сессии (слэши пути → дефисы)
+JSONL_DIR=$AGENT_HOME/.claude/projects/-work-$PROJECT   # claude-сессии agentuser (слэши пути → дефисы)
 SUPLOG=$PROJ_DIR/chat/${TASK}_supervisor.log    # heartbeat-лог супервизора
-CHAT_ID="${CHAT_ID:-000000000}"                               # TG юзера
+CHAT_ID=YOUR_TELEGRAM_CHAT_ID                               # TG юзера
 
 # Стек (VNC/CDP/headless). Если таску внешний стек НЕ нужен — оставь STACK_CHECK_URL пустым,
 # тогда ensure_stack() станет no-op.
@@ -97,9 +100,9 @@ PAUSE_FLAG=/tmp/ram_paused   # global_ram_guard держит агента в SIG
 
 # 5-часовой / session-лимит Claude: при его срабатывании claude -p ВЫХОДИТ с сообщением о лимите в output-логе.
 # Тогда НЕ тратим respawn — ждём сброса и сами перезапускаемся ЦИКЛОМ, пока квота не вернётся (handle_rate_limit ниже).
-# 🔴 Маркеры лимита ОБЯЗАНЫ покрывать и формат «You've hit your session limit · resets 7:30pm»:
+# 🔴 Маркеры лимита ОБЯЗАНЫ покрывать и формат «You've hit your session limit · resets 7:30pm» (кейс PROJECTA 2026-06-30:
 #    этот текст НЕ попал под старый RL_RE → супервизор сделал respawn вместо ожидания и умер с FATAL).
-# 🔴 Узкий формат по-прежнему ловит «hit your session limit · resets 7:30pm», но БЕЗ
+# 🔴 ФИКС 2026-07-13: узкий формат (по-прежнему ловит «hit your session limit · resets 7:30pm»), но БЕЗ
 # широких токенов/прозы — иначе ложный RL на собственном тексте агента и вечная 25-мин пауза/перезапуск.
 RL_RE='hit your (session|usage|5.?hour|weekly) limit|limit will reset|resets? (at )?[0-9]{1,2}(:[0-9]{2})? ?(am|pm)|usage limit reached'
 RL_WAIT=${RL_WAIT:-1500}   # пауза между попытками при лимите (25 мин); цикл до возврата квоты (cap 24× ≈ 10ч)
@@ -127,8 +130,8 @@ launch_agent(){
   rm -f "$PID_FILE"
   : > "$LOG" 2>/dev/null
   LAUNCH_TS=$(date +%s)
-  setsid runuser -u "$AGENT_USER" -- env -i \
-    HOME="$AGENT_HOME" \
+  setsid runuser -u agentuser -- env -i \
+    HOME=$AGENT_HOME \
     PATH="$AGENT_HOME/.local/bin:$AGENT_HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin" \
     SHELL=/bin/bash \
     bash "$LAUNCHER" </dev/null >/dev/null 2>&1 &
@@ -168,9 +171,9 @@ over_limit(){
 }
 
 # Маркер лимита Claude в output-логе агента?
-rate_limited(){ tail -n 60 "$LOG" 2>/dev/null | grep -aiE "$RL_RE" | tail -1; }  # Только свежий хвост, чтобы проза ранних строк не давала ложный RL.
+rate_limited(){ tail -n 60 "$LOG" 2>/dev/null | grep -aiE "$RL_RE" | tail -1; }  # 🔴 ФИКС 2026-07-13: только СВЕЖИЙ хвост лога, не весь (иначе проза ранних строк = ложный RL)
 # Упёрлись в лимит (5ч/session): ждём сброса и перезапуск БЕЗ расхода respawn_count, ЦИКЛОМ до возврата квоты
-# Одного RL_WAIT может быть недостаточно для многочасового сброса. Возврат 0 = лимит обработан.
+# (один RL_WAIT не покрывает многочасовой сброс — кейс PROJECTA 2026-06-30, reset был через ~2.5ч). Возврат 0 = лимит обработан.
 handle_rate_limit(){
   local rl; rl="$(rate_limited)"; [ -z "$rl" ] && return 1
   local tries=0
@@ -270,7 +273,7 @@ while true; do
   else
     # jsonl так и НЕ появился. Раньше тут НЕ было таймаута → агент, зависший на старте
     # (напр. ram_guard SIGSTOP'нул его до первого jsonl), держал supervisor в вечном
-    # цикле без бесконечного «jsonl ещё не появился».
+    # цикле (кейс projectg T-TASKB-CONTACTS 2026-06-19: 9ч «jsonl ещё не появился»).
     # Фикс: ограничиваем ожидание первого jsonl лимитом → нет jsonl дольше
     # NO_JSONL_LIMIT → kill+respawn. LAUNCH_TS сбрасывается в launch_agent, окно — на respawn.
     NOJSONL_AGE=$(( $(date +%s) - LAUNCH_TS ))

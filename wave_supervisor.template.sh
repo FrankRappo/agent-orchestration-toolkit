@@ -1,21 +1,25 @@
 #!/bin/bash
 # wave_supervisor.sh — параметризованный supervisor одиночного claude -p агента.
-# Параметризованный supervisor переживает смерть агента и jsonl-stall:
+# Базис — проверенный /work/projecta/orch/supervisor_channel2_live.sh (2026-06-30):
 #   • respawn по смерти агента и по jsonl-stall (turn завис на API);
 #   🔴 ВНИМАНИЕ: повторяющееся «SUB_PID DEAD без отчёта» каждые ~N мин (не OOM/не stall) =
 #     чаще всего АГЕНТ САМ УСТУПАЕТ ХОД в -p (запустил фон/ScheduleWakeup и «ждёт переинвока»).
 #     Респавн это НЕ лечит (новый агент так же уступит) — правится ТОЛЬКО в таск-файле:
-#     длинные операции = детач на сервере + блокирующий поллинг В ТОМ ЖЕ ходе. См. README.md
+#     длинные операции = детач на сервере + блокирующий поллинг В ТОМ ЖЕ ходе. См. HOW_TO_RUN §10.0.
 #   • 🔴 5-ЧАСОВОЙ ЛИМИТ Claude: при маркере лимита НЕ тратим respawn — ждём RL_WAIT и
-#     перезапускаемся сами, пока квота не вернётся;
+#     перезапускаемся сами, пока квота не вернётся (как у текущего PROJECTA-оркестратора);
 #   • выход по строке STATUS: в отчёте (ФИНИШ != УСПЕХ; успех — только STATUS: SUCCESS).
 #
-# Конфиг передаётся через окружение:
+# Конфиг — через окружение (queue_after_projecta.sh подставляет его в строке tmux):
 #   TASK PROJ_DIR TASK_FILE PID_FILE LOG REPORT JSONL_DIR  (+ опц. MAX_RESPAWN STALL_LIMIT RL_WAIT CHAT_ID)
 #
 # Запуск (root, в tmux): tmux new-session -d -s <TASK>_sup -c "$PROJ_DIR" \
-#   "TASK=.. PROJ_DIR=.. TASK_FILE=.. PID_FILE=.. LOG=.. REPORT=.. JSONL_DIR=.. bash /work/<project>/chat/wave_supervisor.sh"
+#   "TASK=.. PROJ_DIR=.. TASK_FILE=.. PID_FILE=.. LOG=.. REPORT=.. JSONL_DIR=.. bash /work/shop/chat/wave_projecta/wave_supervisor.sh"
 set -u
+
+# Публикуемый шаблон: домашний каталог агента параметризован — подставьте своего пользователя.
+AGENT_USER="${AGENT_USER:-agentuser}"
+AGENT_HOME="${AGENT_HOME:-/home/$AGENT_USER}"
 unset TMUX TMUX_PANE TERM
 export LC_ALL=C.utf8 LANG=C.utf8
 
@@ -26,12 +30,10 @@ TASK_FILE="${TASK_FILE:?need TASK_FILE}"
 PID_FILE="${PID_FILE:?need PID_FILE}"
 LOG="${LOG:?need LOG}"
 REPORT="${REPORT:?need REPORT}"          # сигнал ФИНИША (внутри — строка STATUS:)
-JSONL_DIR="${JSONL_DIR:?need JSONL_DIR}"  # каталог jsonl агента для stall-детекта
-AGENT_USER="${AGENT_USER:-agent}"
-AGENT_HOME="${AGENT_HOME:-/home/$AGENT_USER}"
-LAUNCHER="${LAUNCHER:-/work/settings/wave_launcher.template.sh}"
+JSONL_DIR="${JSONL_DIR:?need JSONL_DIR}"  # каталог jsonl agentuser для stall-детекта
+LAUNCHER="${LAUNCHER:-/work/settings/claude/wave_launcher.template.sh}"
 SUPLOG="${SUPLOG:-${LOG%.log}_supervisor.log}"
-CHAT_ID="${CHAT_ID:-000000000}"
+CHAT_ID="${CHAT_ID:-YOUR_TELEGRAM_CHAT_ID}"
 MAX_RESPAWN="${MAX_RESPAWN:-12}"
 STALL_LIMIT="${STALL_LIMIT:-1500}"        # 25 мин без роста jsonl = завис на API-turn
 POLL="${POLL:-45}"
@@ -39,7 +41,7 @@ NO_JSONL_LIMIT="${NO_JSONL_LIMIT:-$STALL_LIMIT}"
 PAUSE_FLAG=/tmp/ram_paused
 STATUS_RE='^[[:space:]]*STATUS:[[:space:]]*(SUCCESS|FAIL|BLOCKED|PARTIAL)'
 # 5-часовой лимит Claude — маркеры в выводе агента:
-# 🔴 Узкий RL_RE ловит только настоящий harness-формат («You've hit your session limit · resets 7:30pm»),
+# 🔴 ФИКС 2026-07-13: узкий RL_RE — только НАСТОЯЩИЙ harness-формат («You've hit your session limit · resets 7:30pm»),
 # без широких токенов (rate limit/429/overloaded/проза), иначе ложный RL на тексте самого агента → вечная пауза.
 RL_RE='hit your (session|usage|5.?hour|weekly) limit|limit will reset|resets? (at )?[0-9]{1,2}(:[0-9]{2})? ?(am|pm)|usage limit reached'
 RL_WAIT="${RL_WAIT:-1500}"                # 25 мин между попытками при лимите
@@ -54,10 +56,10 @@ respawn_count=0; LAUNCH_TS=0; SUB_PID=""
 
 launch_agent(){
   rm -f "$PID_FILE"; : > "$LOG" 2>/dev/null
-  chown "$AGENT_USER:$AGENT_USER" "$LOG" 2>/dev/null; chmod 666 "$LOG" 2>/dev/null
+  chown agentuser:agentuser "$LOG" 2>/dev/null; chmod 666 "$LOG" 2>/dev/null
   LAUNCH_TS=$(date +%s)
-  setsid runuser -u "$AGENT_USER" -- env -i \
-    HOME="$AGENT_HOME" \
+  setsid runuser -u agentuser -- env -i \
+    HOME=$AGENT_HOME \
     PATH="$AGENT_HOME/.local/bin:$AGENT_HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin" \
     SHELL=/bin/bash \
     PROJECT_DIR="$PROJ_DIR" TASK_FILE="$TASK_FILE" PID_FILE="$PID_FILE" LOG="$LOG" \
@@ -73,7 +75,7 @@ newest_jsonl(){ find "$JSONL_DIR" -maxdepth 1 -name '*.jsonl' -newermt "@$((LAUN
 kill_sub(){ kill -CONT -- -"$SUB_PID" 2>/dev/null; kill -CONT "$SUB_PID" 2>/dev/null; kill -TERM "$SUB_PID" 2>/dev/null; for i in $(seq 1 12); do kill -0 "$SUB_PID" 2>/dev/null || break; sleep 1; done; kill -0 "$SUB_PID" 2>/dev/null && kill -9 "$SUB_PID" 2>/dev/null; sleep 2; }
 over_limit(){ if [ "$respawn_count" -gt "$MAX_RESPAWN" ]; then log "respawn-лимит исчерпан"; $TG "❌ $TASK: $MAX_RESPAWN respawn-ов исчерпано. $SUPLOG"; exit 1; fi }
 
-rate_limited(){ tail -n 60 "$LOG" 2>/dev/null | grep -aiE "$RL_RE" | tail -1; }  # Сканируем только свежий хвост, чтобы избежать ложного RL.
+rate_limited(){ tail -n 60 "$LOG" 2>/dev/null | grep -aiE "$RL_RE" | tail -1; }  # 🔴 ФИКС 2026-07-13: только СВЕЖИЙ хвост лога, не весь (иначе проза ранних строк = ложный RL)
 # Лимит Claude (5ч): ждём сброса и перезапуск БЕЗ расхода respawn_count. Возврат 0 = это был лимит.
 handle_rate_limit(){
   local rl; rl="$(rate_limited)"; [ -z "$rl" ] && return 1

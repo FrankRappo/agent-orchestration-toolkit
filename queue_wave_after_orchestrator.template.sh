@@ -8,31 +8,35 @@
 # Сигнал финала A = смерть его supervisor-сессии(й) (НЕ progress/pid — они врут) + затихшие
 # хвосты (detached-агент мог пережить супервизор) + RAM-гейт.
 #
-# Обратный паттерн описан в queue_wave_then_resume_orchestrator.template.sh.
+# Реальный кейс (2026-06-30): ждали PROJECTA `channel2_live` → запускали projectd-волну (T99/HEADER/CRYPTO).
+# Док и второй паттерн: /work/settings/docs/SEQUENTIAL_ORCHESTRATORS.md
 #
 # ЗАПУСК (ОТ ROOT, ПОСЛЕ старта A, ДО ручного старта B):
 #   tmux new-session -d -s wave_qwait "bash <этот файл>"
 #   sleep 3 && tail -3 <LOG>          # verify: "armed"
 # ОТМЕНА до старта B:  tmux kill-session -t =wave_qwait
 set -u
+
+# Публикуемый шаблон: домашний каталог агента параметризован — подставьте своего пользователя.
+AGENT_USER="${AGENT_USER:-agentuser}"
+AGENT_HOME="${AGENT_HOME:-/home/$AGENT_USER}"
 unset TMUX TMUX_PANE TERM
 export LC_ALL=C.utf8 LANG=C.utf8
 
 # ===================== НАСТРОЙКИ (ЗАПОЛНИТЬ) =====================
-A_SUP_RE='^<project_tag>_[A-Za-z0-9_]*_sup:'         # regex имён tmux-сессий супервизора(ов) A (ждём, пока ВСЕ исчезнут)
-A_PID_FILE='/tmp/UPSTREAM.pid'          # pid-файл агента A (хвост); пусто '' = не проверять
-A_CWD_PREFIX='/work/<project>'                    # cwd живого Claude-агента = «хвост A»; пусто '' = не проверять
-AGENT_USER="${AGENT_USER:-agent}"
+A_SUP_RE='^projecta_[A-Za-z0-9_]*_sup:'         # regex имён tmux-сессий супервизора(ов) A (ждём, пока ВСЕ исчезнут)
+A_PID_FILE='/tmp/CHANNEL2_LIVE.pid'          # pid-файл агента A (хвост); пусто '' = не проверять
+A_CWD_PREFIX='/work/projecta'                    # cwd живого claude(agentuser) = «хвост A»; пусто '' = не проверять
 TAIL_CAP_TICKS=240                          # cap ожидания хвостов A (×60с = 4ч)
 RAM_MIN_KB=1500000                          # гейт MemAvailable перед каждым таском B
-SUPERVISOR='/work/settings/wave_supervisor.template.sh'
-LOG='/work/<project>/chat/queue_wait.log'       # лог сторожа
-CHAT_ID="${CHAT_ID:-000000000}"
+SUPERVISOR='/work/settings/claude/wave_supervisor.template.sh'
+LOG='/work/PROJECT_B/chat/queue_wait.log'       # лог сторожа
+CHAT_ID=YOUR_TELEGRAM_CHAT_ID
 # Волна B — по одной строке на таск, В ПОРЯДКЕ выполнения:
 #   TAG|PROJ_DIR|TASK_FILE|REPORT|JSONL_DIR|SESSION
 TASKS=(
-  "TB1|/work/<project>|/work/<project>/tasks/TB1_x.md|/work/<project>/reports/TB1_report.md|/home/$AGENT_USER/.claude/projects/-work-<project>|waveB_TB1_sup"
-  "TB2|/work/<project>|/work/<project>/tasks/TB2_x.md|/work/<project>/reports/TB2_report.md|/home/$AGENT_USER/.claude/projects/-work-<project>|waveB_TB2_sup"
+  "TB1|/work/PROJECT_B|/work/PROJECT_B/tasks/TB1_x.md|/work/PROJECT_B/reports/TB1_report.md|$AGENT_HOME/.claude/projects/-work-PROJECT_B|waveB_TB1_sup"
+  "TB2|/work/PROJECT_B|/work/PROJECT_B/tasks/TB2_x.md|/work/PROJECT_B/reports/TB2_report.md|$AGENT_HOME/.claude/projects/-work-PROJECT_B|waveB_TB2_sup"
 )
 # ================================================================
 
@@ -58,7 +62,7 @@ for i in $(seq 1 "$TAIL_CAP_TICKS"); do
   ALIVE=0
   if [ -n "$A_PID_FILE" ] && [ -f "$A_PID_FILE" ]; then p=$(cat "$A_PID_FILE" 2>/dev/null); [ -n "$p" ] && kill -0 "$p" 2>/dev/null && ALIVE=1; fi
   if [ -n "$A_CWD_PREFIX" ]; then
-    for pid in $(ps -u "$AGENT_USER" -o pid=,comm= 2>/dev/null | awk '$2=="claude"{print $1}'); do
+    for pid in $(ps -u agentuser -o pid=,comm= 2>/dev/null | awk '$2=="claude"{print $1}'); do
       cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null); case "$cwd" in "$A_CWD_PREFIX"|"$A_CWD_PREFIX"/*) ALIVE=1 ;; esac
     done
   fi

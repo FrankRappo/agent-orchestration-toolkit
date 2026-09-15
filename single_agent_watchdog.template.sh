@@ -1,8 +1,12 @@
 #!/bin/bash
+
+# Публикуемый шаблон: домашний каталог агента параметризован — подставьте своего пользователя.
+AGENT_USER="${AGENT_USER:-agentuser}"
+AGENT_HOME="${AGENT_HOME:-/home/$AGENT_USER}"
 # Watchdog для ОДНОГО sub-агента в режиме `claude -p` (без tmux-оркестратора).
 #
 # Зачем: даже одиночный sub-агент страдает от API-таймаутов так же, как
-# оркестратор. Если API timeout'ит ≥10 ретраев —
+# оркестратор (см. HOW_TO_RUN.md §9.3). Если API timeout'ит ≥10 ретраев —
 # claude CLI умирает с `isApiErrorMessage:true`, sub-агент тихо вылетает.
 # Без watchdog'а юзер узнаёт об этом только когда зайдёт проверить лог.
 #
@@ -10,26 +14,24 @@
 # стагнацию лога (≥45 мин без роста) / success-маркер в логе.
 #
 # Запускать ОТ ROOT в tmux 'agent_watch' (или другое имя):
-#   tmux new-session -d -s agent_watch -c /work/<project> \
-#     "bash /work/settings/single_agent_watchdog.template.sh"
+#   tmux new-session -d -s agent_watch -c /work/<проект> \
+#     "bash /work/settings/claude/single_agent_watchdog.template.sh"
 #
 # НАСТРОЙКИ (заполнить под конкретный таск):
 
 TASK_ID="T-EXAMPLE"                                                    # короткое имя для TG-сообщений
-PROJECT_DIR="${PROJECT_DIR:-/work/<project>}"
-AGENT_USER="${AGENT_USER:-agent}"
-LOG="$PROJECT_DIR/chat/${TASK_ID}_output.log"                          # output sub-агента
+LOG="/work/<проект>/chat/${TASK_ID}_output.log"                          # output sub-агента
 PID_FILE=/tmp/${TASK_ID}.pid                                           # PID-файл от launcher'а
-JSONL_DIR="${JSONL_DIR:-/home/$AGENT_USER/.claude/projects/-work-<project>}" # каталог Claude session jsonl
-WATCHDOG_LOG="$PROJECT_DIR/chat/${TASK_ID}_watchdog.log"               # heartbeat-лог watchdog'а
+JSONL_DIR="$AGENT_HOME/.claude/projects/-work-<проект>"                   # каталог claude session jsonl'ов agentuser'а
+WATCHDOG_LOG="/work/<проект>/chat/${TASK_ID}_watchdog.log"               # heartbeat-лог watchdog'а
 STATE=/tmp/${TASK_ID}_watchdog_state                                   # internal state prefix
-CHAT_ID="${CHAT_ID:-000000000}"                                                      # ID юзера в TG
+CHAT_ID=YOUR_TELEGRAM_CHAT_ID                                                      # ID юзера в TG
 # Любой из паттернов в логе → считаем финал успешным. ERE-regex, '|' между альтернативами.
 # Дефолт ловит: «✅ <TASK_ID>», «<TASK_ID> готов[о]», «<TASK_ID> done», «Merge: <hash>».
 SUCCESS_REGEX="✅ ${TASK_ID}|${TASK_ID}[^\n]{0,80}готов(о)?|${TASK_ID}[^\n]{0,80}done|Merge: [0-9a-f]{7,}"
 
 # Опционально: при success watchdog автоматически отправит до SUCCESS_PHOTOS_MAX скринов в TG.
-# Пример: SUCCESS_PHOTOS_GLOB="/work/<project>/chat/Скрин/${TASK_ID}_*/thumbs/AFTER_*.png"
+# Пример: SUCCESS_PHOTOS_GLOB="/work/<проект>/chat/Скрин/${TASK_ID}_*/thumbs/AFTER_*.png"
 # Bash glob, без кавычек при ls — раскрывается shell'ом. Пусто = ничего не шлём.
 SUCCESS_PHOTOS_GLOB=""
 SUCCESS_PHOTOS_MAX=3
@@ -41,7 +43,8 @@ TICK=90              # период опроса
 # WATCHDOG_START — для фильтрации false-positive API retries:
 # watchdog считает только ОШИБКИ, появившиеся в jsonl ПОСЛЕ его старта.
 # Без этого фильтра watchdog при старте видит isApiErrorMessage из старого
-# jsonl мёртвого предыдущего агента и шлёт ложный пинг.
+# jsonl мёртвого предыдущего агента и шлёт ложный пинг (projectb FIX3-FIN,
+# 2026-05-21: false alarm через 1 секунду после launch).
 WATCHDOG_START_TS=$(date +%s)
 
 # ====================== код ниже трогать не нужно ============================
@@ -118,7 +121,7 @@ $TAIL"
       DELTA=$((NEW_RETRIES - OLD_RETRIES))
       LAST_ERR=$(grep '"isApiErrorMessage":true' "$JSONL" | tail -1 \
         | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); m=d.get('message',{}); c=m.get('content',[{}]); print(c[0].get('text','?')[:200] if c else '?')" 2>/dev/null || echo "?")
-      # Экранируем Markdown-конфликтные символы для bot.py parse_mode=Markdown.
+      # Экранируем Markdown-конфликтные символы (projectb 2026-05-21 — bot.py parse_mode=Markdown)
       LAST_ERR_SAFE=$(echo "$LAST_ERR" | tr -d '*_[]`<>')
       $TG "WARN $TASK_ID API retry +$DELTA total $NEW_RETRIES. Last: $LAST_ERR_SAFE"
       echo "$NEW_RETRIES" > "$STATE.api_retries"

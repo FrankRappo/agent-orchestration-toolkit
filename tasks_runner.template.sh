@@ -1,16 +1,17 @@
 #!/bin/bash
 # Sub-agent runner wrapper — шаблон для копирования в проект.
-# RL-aware runner пережидает 5ч/session-лимит Claude, не тратя обычный retry.
-# Оборачивает `claude -p` идемпотентным sentinel/retry-контрактом.
+# Версия: 2026-07-04 (+ RL-aware: пережидает 5ч/session-лимит Claude, НЕ тратя retry — §9.3bis).
+#         База: 2026-05-26 (после уроков projectd, см. HOW_TO_RUN.md §9.10.1).
 #
-# Замени <project_dir> на путь к проекту (например /work/<project>) и положи как
+# Замени <project_dir> на путь к проекту (например /work/projectd) и положи как
 # /work/<project_dir>/tasks/runner.sh — потом chmod +x.
 #
-# Зачем нужен (см. README.md):
+# Зачем нужен (см. HOW_TO_RUN.md §9.10.1):
 #   `claude -p < task.md` НЕ имеет встроенного retry на API timeout. Один blip
 #   на Anthropic API → sub-agent умирает с "Request timed out" в log, даже не
-#   начав работу. Синхронный API-сбой может остановить несколько sub-agent,
-#   пока основной оркестратор продолжает ждать; wrapper обеспечивает retry.
+#   начав работу. В кейсе projectd 2026-05-26 две sub-agent (T05+T06) синхронно
+#   умерли в 07:21 из-за одной API-ямы — main orchestrator продолжал ждать
+#   их Monitor-ом, watchdog видел смерть но не respawn.
 #
 # Что делает (в порядке):
 #   1. Проверяет sentinel reports/TASK.done — если есть, exit 0 idempotent.
@@ -25,9 +26,9 @@
 #
 # Использование (вместо прямого `setsid claude -p`):
 #   В оркестраторе вместо:
-#     setsid runuser -u <agent_user> -- bash -c "claude -p < tasks/T05.md > logs/T05.log 2>&1" &
+#     setsid runuser -u agentuser -- bash -c "claude -p < tasks/T05.md > logs/T05.log 2>&1" &
 #   Запускать:
-#     setsid runuser -u <agent_user> -- /work/<project>/tasks/runner.sh T05 &
+#     setsid runuser -u agentuser -- /work/<project>/tasks/runner.sh T05 &
 #
 # Wrapper сам подключит лог, задачу, sentinel.
 
@@ -35,12 +36,12 @@ set -u
 
 # ====== НАСТРОЙКИ — поправь под проект ======
 PROJECT_DIR='/work/<project_dir>'      # ← поправь
-PROJECT_TAG='<project_tag>'            # короткий тэг для имени pid-файла
-CHAT_ID="${CHAT_ID:-000000000}"                      # TG для алертов
+PROJECT_TAG='<project_tag>'            # короткий тэг, e.g. 'orv' — для имени pid-файла
+CHAT_ID=YOUR_TELEGRAM_CHAT_ID                      # TG для алертов
 MAX_RETRIES=3
 BASE_BACKOFF=60                        # секунды до 1-го retry; следующие = i * BASE_BACKOFF
 # RL-aware (5ч/session-лимит Claude, §9.3bis): при лимите ждём сброса ЦИКЛОМ, НЕ тратя retry.
-# Иначе быстрые ретраи сгорают об лимит и создают ложный .failed.
+# Иначе 3 быстрых ретрая сгорают об лимит → ложный .failed (кейс PROJECTA 2026-06-30, но на уровне runner).
 RL_WAIT="${RL_WAIT:-1500}"             # 25 мин между попытками при лимите
 RL_MAX="${RL_MAX:-24}"                 # cap ~10ч пережидания лимита
 RL_RE='usage limit|session limit|hit your [a-z ]*limit|limit reached|limit will reset|resets? at|resets? [0-9]|reached your|5-hour|превыш.*лимит|лимит исчерпан'
@@ -105,7 +106,7 @@ for i in $(seq 1 $MAX_RETRIES); do
 
   # Запуск claude -p
   # 🔴 --dangerously-skip-permissions ОБЯЗАТЕЛЬНО: без него sub-агент не имеет прав
-  # на Write/Edit/Bash-сеть → не может писать отчёты/curl/деплоить (фикс ).
+  # на Write/Edit/Bash-сеть → не может писать отчёты/curl/деплоить (фикс 2026-06-01).
   claude --dangerously-skip-permissions -p < "$TASK_FILE" >> "$LOG" 2>&1
   RC=$?
 

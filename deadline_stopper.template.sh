@@ -1,11 +1,11 @@
 #!/bin/bash
 # ============================================================================
 # DEADLINE STOPPER — жёсткий стоп всей оркестратор-сборки по таймеру.
-# Универсальный таймер для требования «через N часов прекратить».
-# Подробно: README.md
+# Шаблон по кейсу projecte 2026-06-10 (юзер: «тормоз — через 5 часов прекратить»).
+# Подробно: HOW_TO_RUN.md §9.11.
 #
 # ЗАПУСК (от ROOT, в своём tmux, ДО или сразу после launcher'а оркестратора):
-#   cp /work/settings/deadline_stopper.template.sh /work/<proj>/chat/deadline_stopper.sh
+#   cp /work/settings/claude/deadline_stopper.template.sh /work/<proj>/chat/deadline_stopper.sh
 #   # заполнить НАСТРОЙКИ ниже, затем:
 #   chmod +x /work/<proj>/chat/deadline_stopper.sh
 #   tmux new-session -d -s <TAG>_deadline '/work/<proj>/chat/deadline_stopper.sh'
@@ -16,10 +16,10 @@
 #   2) снимает A-watchdog из cron, убивает B-loop и ram_guard (свои tmux-сессии);
 #   3) грейс-килл СВОИХ саб-агентов по /tmp/<TAG>_*.pid — по группе процессов
 #      (runner стартует через setsid → PID=PGID): TERM, ждать ≤30с, потом KILL;
-#   4) убивает tmux-сессию оркестратора (от ORCH_USER);
+#   4) убивает tmux-сессию оркестратора (от agentuser);
 #   5) TG-пинг юзеру с честным статусом.
 #
-# 🔴 ЧУЖОЕ НЕ ТРОГАТЬ: на машине могут жить соседние оркестраторы.
+# 🔴 ЧУЖОЕ НЕ ТРОГАТЬ: на машине могут жить соседние оркестраторы (orv_* и т.п.).
 # Все kill'ы — ТОЛЬКО по своим <TAG>_* сущностям (tmux-имена с '=' exact-match,
 # pid-файлы только своего тэга). Никаких pkill claude / kill по имени процесса!
 #
@@ -31,10 +31,10 @@ export LC_ALL=C.utf8 LANG=C.utf8
 # ====== НАСТРОЙКИ — поправь под проект ======
 DEADLINE_TS='<unix_ts>'            # момент стопа: `date -d '+5 hours' +%s`. В комменте — человекочитаемо!
 PROJECT_DIR='/work/<project_dir>'
-TAG='<project_tag>'                # тот же тэг, что в runner.sh / pid-файлах
-ORCH_SESSION='<orchestrator_tmux>' # точное имя tmux-сессии
-ORCH_USER="${ORCH_USER:-agent}"
-CHAT_ID="${CHAT_ID:-000000000}"
+TAG='<project_tag>'                # тот же тэг, что в runner.sh / pid-файлах, e.g. 'insc'
+ORCH_SESSION='<orchestrator_tmux>' # e.g. insc_orchestrator
+ORCH_USER=agentuser
+CHAT_ID=YOUR_TELEGRAM_CHAT_ID
 # ============================================
 
 SENTINEL=$PROJECT_DIR/chat/DEADLINE_STOP
@@ -90,7 +90,7 @@ for pf in /tmp/${TAG}_*.pid; do
   [ -n "$p" ] && kill -0 "$p" 2>/dev/null && { echo "KILL group -$p"; kill -9 -- -"$p" 2>/dev/null || kill -9 "$p" 2>/dev/null; }
 done
 
-# 3. Убить оркестратор-tmux (он живёт на сокете ORCH_USER)
+# 3. Убить оркестратор-tmux (он живёт на сокете agentuser)
 runuser -u "$ORCH_USER" -- tmux kill-session -t "=${ORCH_SESSION}" 2>/dev/null
 
 # 4. Итоговый пинг (поправь grep-паттерн под ID тасков своей волны)
